@@ -1,0 +1,10 @@
+# Training workspace only. fc-10 never imports any of these.
+pandas
+numpy
+scipy
+scikit-learn
+matplotlib
+seaborn
+jupyter
+nbconvert
+pytest
