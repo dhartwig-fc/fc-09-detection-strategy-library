@@ -21,7 +21,7 @@ Plan of record: fc-10 `docs/superpowers/specs/2026-09-24-tm-tuning-studio-and-tr
 |---|---|---|
 | 1 | The tuning framework — confusion matrix, P/R/FPR, why accuracy fails | **ready** |
 | 2 | Backtesting fundamentals — governed registry, baseline, selection bias, below-the-line sampling | **ready** |
-| 3 | Threshold optimisation | |
+| 3 | Threshold optimisation — sweeps, sensitivity, why max-F1 is not a decision, cost-weighted optima, dominance; Decision 1 | **ready** |
 | 4 | Alert volume and capacity | |
 | 5 | Segment calibration | |
 | 6 | Challenger rules | |
@@ -35,7 +35,9 @@ Plan of record: fc-10 `docs/superpowers/specs/2026-09-24-tm-tuning-studio-and-tr
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-export FC10_REPOSITORY=~/nexus-code/.worktrees/tuning-studio
+# the fc-10 checkout carrying the week you are on -- week 3 needs tuning/sweep.py,
+# which is on stage560/tuning-studio-week3 until the Stage560 branches land on main
+export FC10_REPOSITORY=~/nexus-code/.worktrees/tuning-studio-week3
 .venv/bin/jupyter lab training/
 ```
 
