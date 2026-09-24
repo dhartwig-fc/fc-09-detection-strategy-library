@@ -68,3 +68,23 @@ def test_undefined_is_none_in_fc10_and_zero_in_sklearn():
     y_true, y_pred = [True, False, False], [False, False, False]
     assert metrics.evaluate(y_true, y_pred)["precision"] is None
     assert precision_score(y_true, y_pred, zero_division=0) == 0.0
+
+
+def test_the_governed_backtest_matches_sklearn(population):
+    # Week 2: the studio's backtest over the REGISTERED rule must agree with
+    # sklearn computed from the raw population -- the backtest cannot agree
+    # with itself while being wrong.
+    from tools.tm_sim_source import fc10_module
+    backtest = fc10_module("runtime.manufacturing.tuning.backtest")
+    registry = fc10_module("runtime.manufacturing.data_model.tm_rule_registry")
+    rule = registry.rule("high_value")
+    got = backtest.evaluate_rule(population, rule)
+
+    labels, top = population.labels(), population.max_amount_by_customer()
+    ids = sorted(labels)
+    ref = _sklearn([labels[i] for i in ids], [top[i] > rule["threshold"] for i in ids])
+    assert got["tp"] > 0
+    for k in ("tp", "fp", "fn", "tn"):
+        assert got[k] == ref[k], k
+    for k in ("precision", "recall", "f1", "fpr"):
+        assert got[k] == pytest.approx(ref[k], abs=1e-6), k   # the backtest rounds to 6 dp

@@ -45,6 +45,13 @@ def load():
     return tm_sim, metrics
 
 
+def fc10_module(dotted: str):
+    """Any fc-10 module by dotted name, from the named checkout -- e.g. the
+    backtest or the TM rule registry. Imported, never copied."""
+    load()
+    return importlib.import_module(dotted)
+
+
 def population_frames(**kwargs):
     """(transactions, customers, population) for the notebooks."""
     import pandas as pd

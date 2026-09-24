@@ -20,7 +20,7 @@ Plan of record: fc-10 `docs/superpowers/specs/2026-09-24-tm-tuning-studio-and-tr
 | Week | Concept | Status |
 |---|---|---|
 | 1 | The tuning framework — confusion matrix, P/R/FPR, why accuracy fails | **ready** |
-| 2 | Backtesting fundamentals | |
+| 2 | Backtesting fundamentals — governed registry, baseline, selection bias, below-the-line sampling | **ready** |
 | 3 | Threshold optimisation | |
 | 4 | Alert volume and capacity | |
 | 5 | Segment calibration | |
