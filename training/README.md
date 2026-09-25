@@ -35,7 +35,7 @@ Plan of record: fc-10 `docs/superpowers/specs/2026-09-24-tm-tuning-studio-and-tr
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-# the fc-10 checkout carrying the week you are on -- week 4 needs tuning/capacity.py,
+# the fc-10 checkout carrying the week you are on -- week 5 needs tuning/segments.py,
 # which is on stage560/tuning-studio-week5 until the Stage560 branches land on main
 export FC10_REPOSITORY=~/nexus-code/.worktrees/tuning-studio-week5
 .venv/bin/jupyter lab training/
