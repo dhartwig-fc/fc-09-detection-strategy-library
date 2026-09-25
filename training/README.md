@@ -24,7 +24,7 @@ Plan of record: fc-10 `docs/superpowers/specs/2026-09-24-tm-tuning-studio-and-tr
 | 3 | Threshold optimisation — sweeps, sensitivity, why max-F1 is not a decision, cost-weighted optima, dominance; Decision 1 | **ready** |
 | 4 | Alert volume and capacity — unit of work, scale, working-day queues, Little's law, effective recall, the staffing curve; Decision 2 | **ready** |
 | 5 | Segment calibration — KYC segments, same-budget comparison, hold-out, thin lines, complexity cost; Decision 3 | **ready** |
-| 6 | Challenger rules | |
+| 6 | Challenger rules — champion vs challenger at the same workload, overlap, negative control, construction bias, explainability; Decision 4 | **ready** |
 | 7 | Stability and drift | |
 | 8 | Score calibration | |
 | 9 | Validation and governance | |
@@ -35,9 +35,9 @@ Plan of record: fc-10 `docs/superpowers/specs/2026-09-24-tm-tuning-studio-and-tr
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-# the fc-10 checkout carrying the week you are on -- week 5 needs tuning/segments.py,
-# which is on stage560/tuning-studio-week5 until the Stage560 branches land on main
-export FC10_REPOSITORY=~/nexus-code/.worktrees/tuning-studio-week5
+# the fc-10 checkout carrying the week you are on -- week 6 needs tuning/challengers.py,
+# which is on stage560/tuning-studio-week6 until the Stage560 branches land on main
+export FC10_REPOSITORY=~/nexus-code/.worktrees/tuning-studio-week6
 .venv/bin/jupyter lab training/
 ```
 

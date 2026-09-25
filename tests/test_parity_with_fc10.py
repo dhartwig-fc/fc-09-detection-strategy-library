@@ -393,3 +393,123 @@ def test_decision_3_is_the_best_pair_of_lines_by_brute_force(population):
     assert _caught(hold, per_seg) == ev["chosen"]["hold_out"]["tp"]
     assert _caught(hold, {s: single[1] for s in tm_sim.SEGMENTS}) == ev["single"]["hold_out"]["tp"]
     assert ev["chosen"]["hold_out"]["tp"] > ev["single"]["hold_out"]["tp"]
+
+
+# -- week 6: Decision 4, re-derived with pandas --------------------------------
+
+def _payments(population):
+    import pandas as pd
+    df = pd.DataFrame([(t.customer_id, t.value_date, t.amount) for t in population.transactions],
+                      columns=["cid", "date", "amount"])
+    df["month"] = df["date"].str[:7]
+    df["m"] = df["date"].str[:4].astype(int) * 12 + df["date"].str[5:7].astype(int) - 1
+    df["day"] = pd.to_datetime(df["date"]).map(pd.Timestamp.toordinal)
+    return df
+
+
+def _velocity(df, window):
+    counts = np.empty(len(df), dtype=int)
+    for _cid, idx in df.groupby("cid").indices.items():
+        days = df["day"].to_numpy()[idx]
+        order = np.argsort(days, kind="stable")
+        d = days[order]
+        c = np.searchsorted(d, d, side="right") - np.searchsorted(d, d - window, side="right")
+        counts[idx[order]] = c
+    return counts
+
+
+def _baseline_ratio(df, months, min_history=5):
+    ratio = np.full(len(df), np.nan)
+    amt, mon = df["amount"].to_numpy(), df["m"].to_numpy()
+    for _cid, idx in df.groupby("cid").indices.items():
+        by = {}
+        for i in idx:
+            by.setdefault(mon[i], []).append(amt[i])
+        for i in idx:
+            prior = [a for k in range(mon[i] - months, mon[i]) for a in by.get(k, ())]
+            if len(prior) >= min_history:
+                ratio[i] = amt[i] / np.median(prior)
+    return ratio
+
+
+def _score(df, fires, planted):
+    hit = df[fires]
+    customers = set(hit["cid"])
+    return {"workload": len(set(zip(hit["cid"], hit["month"]))), "caught": customers & planted}
+
+
+def _refit(df, planted, kind, grid, budget):
+    """Exhaustive search, same objective and tie-break as fc-10's fit: most planted
+    caught within the budget, then less work, then the LATER grid point."""
+    from itertools import product
+    keys = sorted(grid)
+    feat = (_velocity(df, grid["window_days"][0]) if kind == "amount_and_velocity"
+            else _baseline_ratio(df, grid["baseline_months"][0]))
+    amt = df["amount"].to_numpy()
+    best = None
+    for rank, values in enumerate(product(*(grid[k] for k in keys))):
+        spec = dict(zip(keys, values))
+        if kind == "amount_and_velocity":
+            fires = (amt > spec["threshold"]) & (feat >= spec["min_count"])
+        else:
+            fires = (~np.isnan(feat)) & (amt > spec["floor"]) & (np.nan_to_num(feat) > spec["multiple"])
+        s = _score(df, fires, planted)
+        if s["workload"] > budget:
+            continue
+        key = (len(s["caught"]), -s["workload"], rank)
+        if best is None or key > best[0]:
+            best = (key, {"kind": kind, **spec}, s)
+    return best[1], best[2]
+
+
+def _fires_on(df, spec):
+    amt = df["amount"].to_numpy()
+    if spec["kind"] == "amount_above":
+        return amt > spec["threshold"]
+    if spec["kind"] == "amount_and_velocity":
+        return (amt > spec["threshold"]) & (_velocity(df, spec["window_days"]) >= spec["min_count"])
+    r = _baseline_ratio(df, spec["baseline_months"])
+    return (~np.isnan(r)) & (amt > spec["floor"]) & (np.nan_to_num(r) > spec["multiple"])
+
+
+def test_decision_4_holds_under_an_independent_rebuild(population):
+    """D4 advanced the customer-baseline challenger and rejected velocity, on
+    numbers fc-10 computed. Rebuild every one here with pandas -- the features,
+    the fit, the hold-out, the overlap and the negative control -- and require
+    the same answers."""
+    from tools.tm_sim_source import fc10_module
+    log = fc10_module("runtime.manufacturing.tuning.decision_log")
+    ch = fc10_module("runtime.manufacturing.tuning.challengers")
+    tm_sim = fc10_module("runtime.manufacturing.tuning.tm_sim")
+    [d4] = [e for e in log.load() if e["decision_id"] == "D4"]
+    a, ev = d4["assumptions"], d4["evidence"]
+    fit_df = _payments(population)
+    planted = {c.customer_id for c in population.customers if c.planted}
+    hold = tm_sim.generate(seed=a["holdout_seed"])
+    hold_df, hold_planted = _payments(hold), {c.customer_id for c in hold.customers if c.planted}
+
+    champ = {"kind": "amount_above", "threshold": d4["from_threshold"]}
+    champ_hold = _score(hold_df, _fires_on(hold_df, champ), hold_planted)
+    assert len(champ_hold["caught"]) == ev["champion"]["hold_out"]["tp"]
+    assert champ_hold["workload"] == ev["champion"]["hold_out"]["workload"]
+
+    for kind in a["kinds"]:
+        spec, fitted = _refit(fit_df, planted, kind, ch.GRIDS[kind], a["budget_workload"])
+        got = ev["challengers"][kind]
+        assert spec == got["spec"], kind
+        assert len(fitted["caught"]) == got["in_sample"]["tp"] and fitted["workload"] == got["in_sample"]["workload"], kind
+        held = _score(hold_df, _fires_on(hold_df, spec), hold_planted)
+        assert len(held["caught"]) == got["hold_out"]["tp"], kind
+        o = got["hold_out"]["overlap"]
+        assert o["challenger_only"] == len(held["caught"] - champ_hold["caught"]), kind
+        assert o["both"] == len(held["caught"] & champ_hold["caught"]), kind
+
+    # The advanced challenger's negative control, rebuilt: labels kept, behaviour removed.
+    rs = ev["challengers"]["relative_spike"]
+    neg = tm_sim.generate(intensity=0.0)
+    neg_df = _payments(neg)
+    hit = set(neg_df[_fires_on(neg_df, rs["spec"])]["cid"])
+    neg_planted = {c.customer_id for c in neg.customers if c.planted}
+    lift = (len(hit & neg_planted) / len(hit)) / (len(neg_planted) / len(neg.customers))
+    assert lift == pytest.approx(rs["negative_control"]["lift"], abs=1e-4)
+    assert d4["challenger_verdicts"] == {"amount_and_velocity": "REJECT", "relative_spike": "ADVANCE_TO_VALIDATION"}
