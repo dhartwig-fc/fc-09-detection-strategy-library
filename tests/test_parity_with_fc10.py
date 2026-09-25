@@ -590,3 +590,55 @@ def test_decision_5_holds_under_an_independent_rebuild():
             vals = np.sort(months)
             assert got["peak_month_ratio"] == pytest.approx(round(vals.max() / vals[len(vals) // 2], 2)), (name, label)
     assert d5["stability_findings"] == {n: ("STABLE" if r["stable"] else "UNSTABLE") for n, r in ev["rules"].items()}
+
+
+# -- week 8: Decision 6, the ranked score --------------------------------------------
+
+def _score_months(population, spike, weights, threshold, cap=None):
+    """Customer-months scored with pandas: largest payment, largest multiple of
+    the customer's own baseline (NaN when there is none), planted if any payment
+    in it was. The same score, and the queue's label-blind tie-break."""
+    df = _payments(population)
+    df["ratio"] = _baseline_ratio(df, spike["baseline_months"])
+    df["planted"] = [t.planted for t in population.transactions]
+    g = (df.groupby(["cid", "month"])
+           .agg(amount=("amount", "max"), ratio=("ratio", "max"), planted=("planted", "any"))
+           .reset_index())
+    raw = (weights["amount"] * g["amount"] / threshold
+           + weights["spike"] * np.nan_to_num(g["ratio"].to_numpy() / spike["multiple"]))
+    if cap is not None:
+        raw = np.minimum(raw, cap)
+    g["score"] = [round(float(x), 6) for x in raw]
+    return g.sort_values(["score", "cid", "month"], ascending=[False, True, True]).reset_index(drop=True)
+
+
+def test_decision_6_holds_under_an_independent_rebuild(population):
+    """D6 held the rules and made the cap the finding, on numbers fc-10 computed.
+    Rebuild the score with pandas, work the queue to the budget, sweep the caps
+    and cut the bands -- and require D6's own evidence back."""
+    from tools.tm_sim_source import fc10_module
+    log = fc10_module("runtime.manufacturing.tuning.decision_log")
+    tm_sim_mod = fc10_module("runtime.manufacturing.tuning.tm_sim")
+    [d6] = [e for e in log.load() if e["decision_id"] == "D6"]
+    a, ev = d6["assumptions"], d6["evidence"]
+    spike, threshold, budget = ev["score"]["spike_spec"], ev["score"]["amount_reference"], a["budget_workload"]
+    pops = {"in_sample": population, "hold_out": tm_sim_mod.generate(seed=a["holdout_seed"])}
+
+    def planted_caught(queue, pop):
+        planted = {c.customer_id for c in pop.customers if c.planted}
+        return len(set(queue.head(budget)["cid"]) & planted)
+
+    for side, pop in pops.items():
+        q = _score_months(pop, spike, a["weights"], threshold)
+        assert planted_caught(q, pop) == ev["worked_to_budget"][side]["tp"], side
+        for row in ev["cap_sweep"]:
+            qc = _score_months(pop, spike, a["weights"], threshold, cap=row["cap"])
+            assert planted_caught(qc, pop) == row[side]["tp"], (side, row["cap"])
+            assert int((qc["score"] >= row["cap"]).sum()) == row[side]["at_cap"], (side, row["cap"])
+        if side == "in_sample":
+            n, start = len(q), 0
+            for band, f in zip(ev["bands"]["in_sample"], [b["top_fraction"] for b in ev["bands"]["in_sample"]]):
+                end = n if f == 1.0 else max(start + 1, round(f * n))
+                assert int(q["planted"].iloc[start:end].sum()) == band["planted_months"], band["band"]
+                start = end
+    assert ev["cap_sweep"] and any(r["in_sample"]["at_cap"] > budget for r in ev["cap_sweep"])

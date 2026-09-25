@@ -26,7 +26,7 @@ Plan of record: fc-10 `docs/superpowers/specs/2026-09-24-tm-tuning-studio-and-tr
 | 5 | Segment calibration — KYC segments, same-budget comparison, hold-out, thin lines, complexity cost; Decision 3 | **ready** |
 | 6 | Challenger rules — champion vs challenger at the same workload, overlap, negative control, construction bias, explainability; Decision 4 | **ready** |
 | 7 | Stability and drift — drift scenarios, rules held fixed, KS and PSI, why input stats miss tail drift, transients, indexing; Decision 5 | **ready** |
-| 8 | Score calibration | |
+| 8 | Risk scores and calibration — rules vs ranked queues, ranking vs calibration, top-weighted bands, hold-out edges, the cap and its tie-break, previewing weights you cannot fit; Decision 6 | **ready** |
 | 9 | Validation and governance | |
 | 10 | Capstone engagement | |
 
@@ -35,9 +35,9 @@ Plan of record: fc-10 `docs/superpowers/specs/2026-09-24-tm-tuning-studio-and-tr
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-# the fc-10 checkout carrying the week you are on -- week 7 needs tuning/drift.py,
-# which is on stage560/tuning-studio-week7 until the Stage560 branches land on main
-export FC10_REPOSITORY=~/nexus-code/.worktrees/tuning-studio-week7
+# the fc-10 checkout carrying the week you are on -- weeks 1-7 are on fc-10 main;
+# week 8 needs tuning/calibration.py, on stage560/tuning-studio-week8 until it lands
+export FC10_REPOSITORY=~/nexus-code/.worktrees/tuning-studio-week8
 .venv/bin/jupyter lab training/
 ```
 
