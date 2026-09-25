@@ -513,3 +513,80 @@ def test_decision_4_holds_under_an_independent_rebuild(population):
     lift = (len(hit & neg_planted) / len(hit)) / (len(neg_planted) / len(neg.customers))
     assert lift == pytest.approx(rs["negative_control"]["lift"], abs=1e-4)
     assert d4["challenger_verdicts"] == {"amount_and_velocity": "REJECT", "relative_spike": "ADVANCE_TO_VALIDATION"}
+
+
+# -- week 7: Decision 5, re-derived with pandas and scipy ----------------------
+
+def _drifted_df(population, period):
+    """The period's drift applied with pandas -- not through fc-10's apply_drift."""
+    df = _payments(population)
+    seg = {c.customer_id: c.segment for c in population.customers}
+    start = population.params["start"]
+    offset = (df["date"].str[:4].astype(int) - int(start[:4])) * 12 + df["date"].str[5:7].astype(int) - int(start[5:7])
+    factor = np.full(len(df), float(period["all"]))
+    step = period.get("step")
+    if step:
+        hit = df["cid"].map(seg).isin(step["segments"]).to_numpy() & (offset.to_numpy() >= step["from_month"])
+        factor = np.where(hit, factor * step["factor"], factor)
+    # Python's round, not numpy's: they can differ on a half-cent, and a cent of
+    # disagreement here would be a rounding artefact, not a drift finding.
+    df["amount"] = [round(x * f, 2) for x, f in zip(df["amount"].to_numpy(), factor)]
+    df["segment"] = df["cid"].map(seg)
+    return df
+
+
+def _psi_np(expected, actual, bins=10):
+    e = np.sort(np.asarray(expected))
+    edges = np.unique([e[min(len(e) - 1, (i * len(e)) // bins)] for i in range(1, bins)])
+    def shares(x):
+        c = np.bincount(np.searchsorted(edges, x, side="right"), minlength=len(edges) + 1)
+        return np.maximum(c / len(x), 1e-4)
+    pe, pa = shares(e), shares(np.asarray(actual))
+    return float(np.sum((pa - pe) * np.log(pa / pe)))
+
+
+def test_decision_5_holds_under_an_independent_rebuild():
+    """D5 found the flat lines unstable and the customer-baseline rule stable, on
+    numbers fc-10 computed. Rebuild them: the drift with pandas, KS with scipy,
+    PSI with numpy, each rule's workload and catches per period, and the busiest
+    month -- and require the same answers."""
+    from scipy.stats import ks_2samp
+    from tools.tm_sim_source import fc10_module
+    log = fc10_module("runtime.manufacturing.tuning.decision_log")
+    tm_sim = fc10_module("runtime.manufacturing.tuning.tm_sim")
+    [d5] = [e for e in log.load() if e["decision_id"] == "D5"]
+    a, ev = d5["assumptions"], d5["evidence"]
+    frames = {}
+    for p in a["scenario"]["periods"]:
+        pop = tm_sim.generate(seed=p["seed"])
+        frames[p["label"]] = (_drifted_df(pop, p), {c.customer_id for c in pop.customers if c.planted})
+    first = a["scenario"]["periods"][0]["label"]
+
+    base_df = frames[first][0]
+    base_cm = base_df.groupby(["cid", "month"])["amount"].max().to_numpy()
+    for label, fd in ev["feature_drift"].items():
+        df = frames[label][0]
+        assert fd["payment_amount"]["ks"] == pytest.approx(ks_2samp(base_df["amount"], df["amount"]).statistic, abs=1e-6)
+        assert fd["payment_amount"]["psi"] == pytest.approx(_psi_np(base_df["amount"], df["amount"]), abs=1e-6)
+        cm = df.groupby(["cid", "month"])["amount"].max().to_numpy()
+        assert fd["customer_month_max"]["ks"] == pytest.approx(ks_2samp(base_cm, cm).statistic, abs=1e-6)
+
+    base_median = np.sort(base_df["amount"].to_numpy())[len(base_df) // 2]
+    for name, rule in a["rules"].items():
+        for label, (df, planted) in frames.items():
+            amt = df["amount"].to_numpy()
+            if rule["kind"] == "segment_lines":
+                line = {s: rule["lines"][g] for g, members in rule["groups"].items() for s in members}
+                fires = amt > df["segment"].map(line).to_numpy()
+            elif rule.get("indexed") == "median_payment":
+                idx = np.sort(amt)[len(amt) // 2] / base_median
+                fires = amt > rule["threshold"] * idx
+            else:
+                fires = _fires_on(df, rule)
+            s = _score(df, fires, planted)
+            got = ev["rules"][name]["periods"][label]
+            assert (s["workload"], len(s["caught"])) == (got["workload"], got["tp"]), (name, label)
+            months = df[fires].drop_duplicates(["cid", "month"])["month"].value_counts().sort_index().to_numpy()
+            vals = np.sort(months)
+            assert got["peak_month_ratio"] == pytest.approx(round(vals.max() / vals[len(vals) // 2], 2)), (name, label)
+    assert d5["stability_findings"] == {n: ("STABLE" if r["stable"] else "UNSTABLE") for n, r in ev["rules"].items()}
