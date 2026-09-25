@@ -642,3 +642,96 @@ def test_decision_6_holds_under_an_independent_rebuild(population):
                 assert int(q["planted"].iloc[start:end].sum()) == band["planted_months"], band["band"]
                 start = end
     assert ev["cap_sweep"] and any(r["in_sample"]["at_cap"] > budget for r in ev["cap_sweep"])
+
+
+# -- week 9: Decision 7, the validation --------------------------------------------
+
+def _hybrid_fires(df, spike, fallback, segments, ratio=None):
+    """The spike where a baseline exists, the fallback line where it does not."""
+    ratio = _baseline_ratio(df, spike["baseline_months"]) if ratio is None else ratio
+    amt = df["amount"].to_numpy()
+    has = ~np.isnan(ratio)
+    spike_fires = has & (amt > spike["floor"]) & (np.nan_to_num(ratio) > spike["multiple"])
+    if fallback is None:
+        return spike_fires
+    if fallback["kind"] == "amount_above":
+        line = np.full(len(df), float(fallback["threshold"]))
+    else:
+        per = {s: fallback["lines"][g] for g, members in fallback["groups"].items() for s in members}
+        line = df["cid"].map(segments).map(per).to_numpy(dtype=float)
+    return spike_fires | (~has & (amt > line))
+
+
+def test_decision_7_holds_under_an_independent_rebuild(population):
+    """D7 held the champion and carried a hybrid forward, on numbers fc-10
+    computed. Rebuild the hybrids with pandas -- including which catches are
+    ATTRIBUTABLE, i.e. fired on a planted payment -- and the volatility drift
+    from its own per-payment seeds, and require D7's evidence back."""
+    import math
+    import random
+    from tools.tm_sim_source import fc10_module
+    log = fc10_module("runtime.manufacturing.tuning.decision_log")
+    tm_sim_mod = fc10_module("runtime.manufacturing.tuning.tm_sim")
+    [d7] = [e for e in log.load() if e["decision_id"] == "D7"]
+    a, ev = d7["assumptions"], d7["evidence"]
+    spike = ev["spike_spec"]
+    floored = {**spike, "floor": a["floor_variant"]}
+
+    def score(pop, df, fires):
+        planted = {c.customer_id for c in pop.customers if c.planted}
+        hit = df[fires]
+        alerted = set(hit["cid"])
+        attributable = set(hit[hit["planted"]]["cid"])
+        return {"workload": len(set(zip(hit["cid"], hit["month"]))), "customers_alerted": len(alerted),
+                "tp": len(alerted & planted), "attributable_tp": len(attributable)}
+
+    def frame(pop):
+        df = _payments(pop)
+        df["planted"] = [t.planted for t in pop.transactions]
+        return df, {c.customer_id: c.segment for c in pop.customers}
+
+    hold = tm_sim_mod.generate(seed=a["holdout_seed"])
+    burn = ev["burn_in_months"]
+    cands = {"spike": (spike, None)}
+    for name, fb in a["fallbacks"].items():
+        cands[f"spike+{name}"] = (spike, fb)
+        cands[f"spike_floor+{name}"] = (floored, fb)
+    lines = {n: fb for n, fb in a["fallbacks"].items() if fb["kind"] == "segment_lines"}
+
+    def lines_fire(df, fb, segs):
+        per = {s: fb["lines"][g] for g, members in fb["groups"].items() for s in members}
+        return df["amount"].to_numpy() > df["cid"].map(segs).map(per).to_numpy(dtype=float)
+
+    def all_fires(df, segs, only=None):
+        ratio = _baseline_ratio(df, spike["baseline_months"])     # one window serves every spike variant
+        out = {"champion": df["amount"].to_numpy() > ev["champion_threshold"]}
+        out.update({n: lines_fire(df, fb, segs) for n, fb in lines.items()})
+        out.update({n: _hybrid_fires(df, sp, fb, segs, ratio) for n, (sp, fb) in cands.items()
+                    if only is None or n in only})
+        return out
+
+    for side, pop in (("in_sample", population), ("hold_out", hold)):
+        df, segs = frame(pop)
+        m = (df["m"] - df["m"].min()).to_numpy()
+        for name, fires in all_fires(df, segs).items():
+            got = score(pop, df, fires)
+            assert got == {k: ev["rules"][name][side][k] for k in got}, (name, side)
+            if side == "hold_out":
+                late = score(pop, df, fires & (m >= burn))
+                assert late == {k: ev["rules"][name]["hold_out_after_burn_in"][k] for k in late}, name
+
+    # the volatility drift, rebuilt from its stated per-payment seeds
+    vc = a["conditions"]["volatility"]
+    df0, segs = frame(population)
+    base = {n: score(population, df0, f)["workload"] for n, f in all_fires(df0, segs).items()}
+    for i, vseed in enumerate(vc["seeds"]):
+        df = df0.copy()
+        df["amount"] = [t.amount if t.planted else round(t.amount * math.exp(
+            vc["sigma"] * random.Random(f"{vseed}:{t.txn_id}").gauss(0.0, 1.0) - vc["sigma"] ** 2 / 2), 2)
+            for t in population.transactions]
+        fires = all_fires(df, segs, only={"spike"})
+        for name in ("champion", "d3_lines", "spike"):
+            change = round(score(population, df, fires[name])["workload"] / base[name] - 1, 6)
+            assert change == ev["rules"][name]["volatility"]["workload_change_by_seed"][i], (name, vseed)
+    passed = sorted(n for n, r in ev["rules"].items() if r["conditions"]["all_passed"])
+    assert d7["candidate"]["name"] in passed and d7["challenger_to_beat"]["name"] not in passed
