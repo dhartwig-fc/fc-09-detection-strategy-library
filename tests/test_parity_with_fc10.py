@@ -166,3 +166,160 @@ def test_the_governed_backtest_matches_sklearn(population):
         assert got[k] == ref[k], k
     for k in ("precision", "recall", "f1", "fpr"):
         assert got[k] == pytest.approx(ref[k], abs=1e-6), k   # the backtest rounds to 6 dp
+
+
+# ---------------------------------------------------------------------------
+# Week 4 -- capacity. An INDEPENDENT queue, written from the documented rules and
+# not from fc-10's code: whole-number arithmetic in tenths of a review (no
+# Fraction), a plain list as the queue, pandas for the workload. The rules:
+#   * one alert per (customer, calendar month), dated to its first payment over
+#     the line; same-day alerts queue in customer-id order;
+#   * reviews happen Monday-Friday only; a weekend alert is received Monday;
+#   * each working day adds `capacity` to a credit; whole units of credit work
+#     the oldest alerts; an EMPTY queue drops whole unused credit (no banking);
+#   * a wait is working days from the first day an alert could be worked.
+# ---------------------------------------------------------------------------
+import datetime as _dt
+
+import pandas as pd
+
+
+_FRAMES = {}
+
+
+def _frame(population):
+    key = id(population)   # frozen, module-scoped; digest() re-serialises 180k rows
+    if key not in _FRAMES:
+        _FRAMES[key] = pd.DataFrame([(t.customer_id, t.value_date, t.amount) for t in population.transactions],
+                                    columns=["customer", "date", "amount"])
+    return _FRAMES[key]
+
+
+def _cm_alerts(population, threshold):
+    """(date, customer) per customer-month alert, in queue order -- via pandas."""
+    df = _frame(population)
+    over = df[df.amount > threshold].copy()
+    over["month"] = over.date.str[:7]
+    first = over.groupby(["customer", "month"]).date.min().reset_index()
+    return sorted(zip(first.date, first.customer))
+
+
+_CM_MAX = {}
+
+
+def _cm_workload(population, threshold):
+    """Customer-month alerts at a threshold = months whose LARGEST payment is over
+    it. One pandas group-by per population, cached; each threshold is a compare."""
+    key = id(population)   # frozen, module-scoped; digest() re-serialises 180k rows
+    if key not in _CM_MAX:
+        df = pd.DataFrame([(t.customer_id, t.value_date[:7], t.amount) for t in population.transactions],
+                          columns=["customer", "month", "amount"])
+        _CM_MAX[key] = df.groupby(["customer", "month"]).amount.max().to_numpy()
+    return int((_CM_MAX[key] > threshold).sum())
+
+
+def _window(population):
+    start = _dt.date.fromisoformat(population.params["start"])
+    days, d = [], start
+    months = population.params["months"]
+    end_y, end_m = divmod(start.month - 1 + months, 12)
+    end = _dt.date(start.year + end_y, end_m + 1, 1)
+    while d < end:
+        days.append(d)
+        d += _dt.timedelta(days=1)
+    return days
+
+
+def _independent_queue(population, threshold, capacity, sla=None):
+    """Returns (backlog_end, waits, caught_planted_customers)."""
+    tenths = round(capacity * 10)
+    arrivals = {}
+    for date, cust in _cm_alerts(population, threshold):
+        arrivals.setdefault(date, []).append(cust)
+    labels = population.labels()
+    queue, credit, workday, waits, caught = [], 0, -1, [], set()
+    for day in _window(population):
+        working = day.weekday() < 5
+        if working:
+            workday += 1
+        received = workday if working else workday + 1
+        queue += [(c, received) for c in arrivals.get(day.isoformat(), [])]
+        if working:
+            credit += tenths
+            while queue and credit >= 10:
+                cust, rec = queue.pop(0)
+                credit -= 10
+                waits.append(workday - rec)
+                if labels[cust] and (sla is None or workday - rec <= sla):
+                    caught.add(cust)
+            if not queue:
+                credit %= 10
+    return len(queue), waits, caught
+
+
+@pytest.mark.parametrize("threshold,cap", [(75_000, 2.0), (177_500, 2.0), (122_500, 4.0), (100_000, 0.7)])
+def test_the_capacity_queue_matches_an_independent_one(population, threshold, cap):
+    from tools.tm_sim_source import fc10_module
+    capacity = fc10_module("runtime.manufacturing.tuning.capacity")
+    q = capacity.simulate_queue(capacity.daily_arrivals(population, threshold),
+                                capacity.calendar(population), cap)
+    backlog, waits, _caught = _independent_queue(population, threshold, cap)
+    assert q["worked"] > 0, "a queue that worked nothing proves nothing"
+    assert q["backlog_end"] == backlog
+    assert sorted(q["waits"]) == sorted(waits)
+
+
+@pytest.mark.parametrize("threshold,cap,sla", [(75_000, 2.0, None), (75_000, 2.0, 10),
+                                                (177_500, 2.0, 10), (122_500, 4.0, None)])
+def test_effective_recall_matches_an_independent_queue(population, threshold, cap, sla):
+    from tools.tm_sim_source import fc10_module
+    capacity = fc10_module("runtime.manufacturing.tuning.capacity")
+    _b, _w, caught = _independent_queue(population, threshold, cap, sla)
+    planted = sum(population.labels().values())
+    got = capacity.effective_recall(population, threshold, cap, sla_working_days=sla)
+    assert got == pytest.approx(len(caught) / planted, abs=1e-6)
+
+
+def test_the_frontier_workload_matches_pandas_and_unlimited_capacity_matches_sklearn(population):
+    from tools.tm_sim_source import fc10_module
+    capacity = fc10_module("runtime.manufacturing.tuning.capacity")
+    f = capacity.frontier(population, "high_value", 2.0)
+    y_true, amounts = _sweep_arrays(population)
+    for p in f["points"][::8]:
+        assert p["workload"] == len(_cm_alerts(population, p["threshold"])), p["threshold"]
+        assert p["workload"] == _cm_workload(population, p["threshold"]), p["threshold"]
+    for t in (50_000, 75_000, 150_000):
+        ref = recall_score(y_true, amounts > t)
+        assert capacity.effective_recall(population, t, 10_000) == pytest.approx(ref, abs=1e-6)
+
+
+def test_decision_2s_evidence_holds_under_the_independent_queue(population):
+    """D2 held GBP 75,000 on: effective recall 0.135 (0 within the SLA) against
+    0.325 at the capacity frontier, and a staffing need of ~1,390/day. Every one
+    of those re-derived here from pandas and the independent queue."""
+    from tools.tm_sim_source import fc10_module
+    log = fc10_module("runtime.manufacturing.tuning.decision_log")
+    [d2] = [e for e in log.load() if e["decision_id"] == "D2"]
+    a, ev = d2["assumptions"], d2["evidence"]
+    cap = a["bank_capacity_per_day"] / a["sample_ratio"]
+    planted = sum(population.labels().values())
+    budget = cap * sum(d.weekday() < 5 for d in _window(population))
+
+    # The operating point: best recall whose customer-month workload fits.
+    y_true, amounts = _sweep_arrays(population)
+    grid = sorted({p["threshold"] for p in [ev["today"], ev["operating_point"]]} |
+                  set(range(10_000, 200_001, 2_500)))
+    fits = [(recall_score(y_true, amounts > t), t) for t in grid if _cm_workload(population, t) <= budget]
+    assert max(fits)[1] == ev["operating_point"]["threshold"]
+
+    for key in ("today", "operating_point"):
+        t = ev[key]["threshold"]
+        backlog, _w, caught = _independent_queue(population, t, cap)
+        _b, _w2, caught_sla = _independent_queue(population, t, cap, a["sla_working_days"])
+        assert ev[key]["workload"] == len(_cm_alerts(population, t))
+        assert ev[key]["queue"]["backlog_end"] == backlog
+        assert ev[key]["effective_recall"] == pytest.approx(len(caught) / planted, abs=1e-6)
+        assert ev[key]["effective_recall_within_sla"] == pytest.approx(len(caught_sla) / planted, abs=1e-6)
+
+    need = len(_cm_alerts(population, ev["today"]["threshold"])) / sum(d.weekday() < 5 for d in _window(population))
+    assert ev["capacity_to_hold_today"]["bank_scale_per_day"] == pytest.approx(need * a["sample_ratio"], abs=0.1)
