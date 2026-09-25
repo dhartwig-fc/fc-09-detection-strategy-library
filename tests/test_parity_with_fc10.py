@@ -323,3 +323,73 @@ def test_decision_2s_evidence_holds_under_the_independent_queue(population):
 
     need = len(_cm_alerts(population, ev["today"]["threshold"])) / sum(d.weekday() < 5 for d in _window(population))
     assert ev["capacity_to_hold_today"]["bank_scale_per_day"] == pytest.approx(need * a["sample_ratio"], abs=0.1)
+
+
+# -- week 5: Decision 3, re-derived by brute force ------------------------------
+
+def _group_arrays(population, groups):
+    """Per line: sorted customer-month top payments (workload) and sorted
+    customer-level top payments of PLANTED customers (catches) -- pandas, not
+    fc-10's curves."""
+    import pandas as pd
+    seg = {c.customer_id: c.segment for c in population.customers}
+    line_of = {s: g for g, members in groups.items() for s in members}
+    df = pd.DataFrame([(t.customer_id, t.value_date[:7], t.amount) for t in population.transactions],
+                      columns=["cid", "month", "amount"])
+    df["line"] = df["cid"].map(seg).map(line_of)
+    cm = df.groupby(["line", "cid", "month"])["amount"].max().reset_index()
+    top = df.groupby(["line", "cid"])["amount"].max().reset_index()
+    planted = {c.customer_id for c in population.customers if c.planted}
+    top = top[top["cid"].isin(planted)]
+    return ({g: np.sort(cm.loc[cm.line == g, "amount"].to_numpy()) for g in groups},
+            {g: np.sort(top.loc[top.line == g, "amount"].to_numpy()) for g in groups})
+
+
+def _above(arr, t):
+    return int(len(arr) - np.searchsorted(arr, t, side="right"))
+
+
+def _caught(population, lines_by_segment):
+    planted = [c for c in population.customers if c.planted]
+    top = population.max_amount_by_customer()
+    return sum(top[c.customer_id] > lines_by_segment[c.segment] for c in planted)
+
+
+def test_decision_3_is_the_best_pair_of_lines_by_brute_force(population):
+    """D3 chose retail 30,000 / non-retail 152,500 at D2's workload. Search EVERY
+    pair of lines on the grid here, with pandas, and require the same answer and
+    the same catches -- fitted and on the hold-out. fc-10 fits by a dynamic
+    programme; a bug in that shortcut cannot hide behind itself."""
+    from tools.tm_sim_source import fc10_module
+    log = fc10_module("runtime.manufacturing.tuning.decision_log")
+    sweep = fc10_module("runtime.manufacturing.tuning.sweep")
+    tm_sim = fc10_module("runtime.manufacturing.tuning.tm_sim")
+    [d3] = [e for e in log.load() if e["decision_id"] == "D3"]
+    a, ev = d3["assumptions"], d3["evidence"]["at_budget"]
+    groups, budget = a["groups"], a["budget_workload"]
+    grid = sweep.default_grid(d3["from_threshold"])
+    work, planted = _group_arrays(population, groups)
+
+    names = list(groups)
+    best = None
+    for t0 in grid:
+        for t1 in grid:
+            w = _above(work[names[0]], t0) + _above(work[names[1]], t1)
+            if w > budget:
+                continue
+            key = (_above(planted[names[0]], t0) + _above(planted[names[1]], t1), -w, (t0, t1))
+            best = key if best is None or key > best else best
+    assert best is not None
+    assert dict(zip(names, best[2])) == d3["to_thresholds"] == ev["chosen_lines"]
+    assert best[0] == ev["chosen"]["in_sample"]["tp"]
+
+    # The best ONE line within the same budget, and both options on the hold-out.
+    all_work = np.sort(np.concatenate(list(work.values())))
+    all_planted = np.sort(np.concatenate(list(planted.values())))
+    single = max((_above(all_planted, t), t) for t in grid if _above(all_work, t) <= budget)
+    assert single[0] == ev["single"]["in_sample"]["tp"]
+    hold = tm_sim.generate(seed=a["holdout_seed"])
+    per_seg = {s: d3["to_thresholds"][g] for g, members in groups.items() for s in members}
+    assert _caught(hold, per_seg) == ev["chosen"]["hold_out"]["tp"]
+    assert _caught(hold, {s: single[1] for s in tm_sim.SEGMENTS}) == ev["single"]["hold_out"]["tp"]
+    assert ev["chosen"]["hold_out"]["tp"] > ev["single"]["hold_out"]["tp"]
