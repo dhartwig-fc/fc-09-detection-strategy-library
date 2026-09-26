@@ -35,9 +35,9 @@ Plan of record: fc-10 `docs/superpowers/specs/2026-09-24-tm-tuning-studio-and-tr
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-# the fc-10 checkout carrying the week you are on -- weeks 1-9 are on fc-10 main;
-# week 10 needs tuning/{cash,capstone}.py, on stage560/tuning-studio-week10 until it lands
-export FC10_REPOSITORY=~/nexus-code/.worktrees/tuning-studio-week10
+# a checkout of fc-10 main -- all ten weeks landed there on 2026-09-26
+# (refresh it with: git -C ~/nexus-code/.worktrees/sit-console checkout --detach origin/main)
+export FC10_REPOSITORY=~/nexus-code/.worktrees/sit-console
 .venv/bin/jupyter lab training/
 ```
 
