@@ -28,16 +28,16 @@ Plan of record: fc-10 `docs/superpowers/specs/2026-09-24-tm-tuning-studio-and-tr
 | 7 | Stability and drift — drift scenarios, rules held fixed, KS and PSI, why input stats miss tail drift, transients, indexing; Decision 5 | **ready** |
 | 8 | Risk scores and calibration — rules vs ranked queues, ranking vs calibration, top-weighted bands, hold-out edges, the cap and its tie-break, previewing weights you cannot fit; Decision 6 | **ready** |
 | 9 | Validation and governance — three lines of defence, the governed apply step and its predictions, independent challenge with committed responses, attributable catches, burn-in, pass marks, a decision re-taken before commit, the paper generated from the log; Decision 7 | **ready** |
-| 10 | Capstone engagement | |
+| 10 | The capstone engagement — terms stated before the evidence, a scenario that tests rather than flatters, stressing each rule where it is weak, the order of the queue at capacity, a proposal rather than a change, publishing the paper behind a staleness gate; Decision 8 | **ready** |
 
 ## Setup
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-# the fc-10 checkout carrying the week you are on -- weeks 1-8 are on fc-10 main;
-# week 9 needs tuning/{apply,validation,paper}.py, on stage560/tuning-studio-week9 until it lands
-export FC10_REPOSITORY=~/nexus-code/.worktrees/tuning-studio-week9
+# the fc-10 checkout carrying the week you are on -- weeks 1-9 are on fc-10 main;
+# week 10 needs tuning/{cash,capstone}.py, on stage560/tuning-studio-week10 until it lands
+export FC10_REPOSITORY=~/nexus-code/.worktrees/tuning-studio-week10
 .venv/bin/jupyter lab training/
 ```
 

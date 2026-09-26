@@ -735,3 +735,60 @@ def test_decision_7_holds_under_an_independent_rebuild(population):
             assert change == ev["rules"][name]["volatility"]["workload_change_by_seed"][i], (name, vseed)
     passed = sorted(n for n, r in ev["rules"].items() if r["conditions"]["all_passed"])
     assert d7["candidate"]["name"] in passed and d7["challenger_to_beat"]["name"] not in passed
+
+
+# -- week 10: Decision 8, the capstone ---------------------------------------------
+
+def _cash_frame(pop):
+    import pandas as pd
+    df = pd.DataFrame([(t.customer_id, t.value_date, t.amount, t.planted, t.txn_id) for t in pop.transactions],
+                      columns=["cid", "date", "amount", "planted", "txn"])
+    df["day"] = pd.to_datetime(df["date"]).map(pd.Timestamp.toordinal)
+    df["month"] = df["date"].str[:7]
+    return df.sort_values(["date", "txn"]).reset_index(drop=True)
+
+
+def _cash_fires(df, rule):
+    """pandas rebuild of the two cash rules over the 30 days ENDING each deposit's day."""
+    out = np.zeros(len(df), dtype=bool)
+    for _cid, idx in df.groupby("cid").indices.items():
+        days, amt = df["day"].to_numpy()[idx], df["amount"].to_numpy()[idx]
+        for j in range(len(idx)):
+            win = (days >= days[j] - 29) & (days <= days[j])
+            if rule["kind"] == "rolling_sum":
+                out[idx[j]] = amt[win].sum() > rule["threshold"]
+            else:
+                near = (amt >= rule["band_low"]) & (amt < rule["line"])
+                out[idx[j]] = near[j] and near[win].sum() >= rule["min_count"]
+    return out
+
+
+def test_decision_8_holds_under_an_independent_rebuild():
+    """D8 proposed a cash line and made capacity the finding, on numbers fc-10
+    computed. Rebuild both rule families with pandas on the unused hold-out and
+    every stress, and the line's queue worked in signature order to capacity,
+    and require D8's evidence back."""
+    from tools.tm_sim_source import fc10_module
+    log = fc10_module("runtime.manufacturing.tuning.decision_log")
+    cash = fc10_module("runtime.manufacturing.tuning.cash")
+    [d8] = [e for e in log.load() if e["decision_id"] == "D8"]
+    a, ev = d8["assumptions"], d8["evidence"]
+    line, sig = ev["at_capacity"]["line"], ev["at_capacity"]["signature"]
+    budget = a["capacity_budget"]
+    pops = {"hold_out": cash.generate(seed=a["holdout_seed"])}
+    for name, dial in a["stresses"].items():
+        pops[name] = cash.generate(seed=a["holdout_seed"], **{k: tuple(v) for k, v in dial.items()})
+    for name, pop in pops.items():
+        df = _cash_frame(pop)
+        planted = {c.customer_id for c in pop.customers if c.planted}
+        for fam, j in ev["fitted"].items():
+            hit = df[_cash_fires(df, j["rule"])]
+            got = {"workload": len(set(zip(hit["cid"], hit["month"]))), "tp": len(set(hit["cid"]) & planted)}
+            assert got == {k: j[name][k] for k in got}, (fam, name)
+        # the ordered queue: most signature hits first, then oldest month, then id
+        lh, sh = df[_cash_fires(df, line)], df[_cash_fires(df, sig)]
+        hits = sh.groupby(["cid", "month"]).size().to_dict()
+        months = sorted(set(zip(lh["cid"], lh["month"])), key=lambda m: (-hits.get(m, 0), m[1], m[0]))
+        caught = len({c for c, _m in months[:budget]} & planted)
+        assert caught == ev["at_capacity"]["sides"][name]["ordered_queue"]["tp"], name
+    assert d8["decision"] == "PROPOSE" and d8["applied"] is False
